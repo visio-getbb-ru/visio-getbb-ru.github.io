@@ -1,0 +1,71 @@
+name: Build and publish the archive
+
+# Builds the static read-only copy of visio.getbb.ru from the private source repository
+# (visio-getbb-ru/raw: raw pages, attachments, images, scripts) and publishes it to GitHub Pages.
+# Nothing generated is committed here; the site goes straight to Pages as an artifact.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get the source data (read-only deploy key)
+        uses: actions/checkout@v7
+        with:
+          repository: visio-getbb-ru/raw
+          ssh-key: ${{ secrets.RAW_DEPLOY_KEY }}
+          path: raw
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install Python packages
+        run: pip install beautifulsoup4 lxml
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Build the site
+        working-directory: raw
+        run: python scripts/build_site.py pages attachments assets ../site external_images gallery_images
+
+      - name: Build the search index (one record per post)
+        working-directory: raw
+        run: |
+          python scripts/extract_posts.py pages ../posts.json
+          cd scripts/search
+          npm install --no-audit --no-fund
+          node index_posts.mjs ../../../posts.json ../../../site/pagefind
+
+      - name: Summary
+        run: |
+          echo "files: $(find site -type f | wc -l), size: $(du -sh site | cut -f1)" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
